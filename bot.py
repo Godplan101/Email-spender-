@@ -33,11 +33,12 @@ SENDER_EMAIL = os.getenv("customerservice@truckforsaleusa.com", "").strip()
 ADMIN_CHAT_ID = os.getenv("5811425897", "").strip()
 WEBSITE_LINK = os.getenv("https://Godplan10111.github.io/KING-COMPANY", "").strip()
 
-DEFAULT_SUBJECT = os.getenv("DEFAULT_SUBJECT", "Important update from Facebook").strip()
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
-BATCH_DELAY_SECONDS = int(os.getenv("BATCH_DELAY_SECONDS", "180"))
-DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "300"))
-MAX_FAILURES = int(os.getenv("MAX_FAILURES", "15"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+SENDER_NAME = os.getenv("SENDER_NAME", "My Company").strip()
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
+WEBSITE_LINK = os.getenv("WEBSITE_LINK", "").strip()
 
 EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
