@@ -240,7 +240,7 @@ def send_brevo_email(to_email: str, subject: str, html_content: str) -> requests
 @require_admin
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id if update.effective_chat else "unknown"
-text = (
+    text = (
         "✨ *EMAIL SPENDER* ✨\n"
         "_Elite Email Campaign Manager_\n\n"
         f"🆔 *Chat ID:* `{chat_id}`\n\n"
@@ -262,7 +262,6 @@ text = (
         "💎 _Powered by Email Spender Pro_"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-
 @require_admin
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
