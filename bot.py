@@ -240,32 +240,27 @@ def send_brevo_email(to_email: str, subject: str, html_content: str) -> requests
 @require_admin
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id if update.effective_chat else "unknown"
-    text = (
+text = (
         "✨ *EMAIL SPENDER* ✨\n"
-       "〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n\n"
         "_Elite Email Campaign Manager_\n\n"
-        "🆔 *Chat ID:* `{chat_id}`\n\n"
-        "〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n\n"
-        "🗂 *CAMPAIGN SETUP*\n"
+        f"🆔 *Chat ID:* `{chat_id}`\n\n"
+        "📋 *CAMPAIGN SETUP*\n"
         "┣ /addemails — Import email list\n"
         "┣ /setsubject — Configure subject\n"
         "┣ /setmessage — Craft your message\n"
         "┣ /setbutton1 — Primary CTA button\n"
         "┗ /setbutton2 — Secondary CTA button\n\n"
-        "〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n\n"
         "🚀 *CAMPAIGN LAUNCH*\n"
         "┣ /preview — Review before sending\n"
         "┣ /testsend — Send test email\n"
         "┗ /sendcampaign — Launch campaign\n\n"
-        "〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n\n"
-        "⚙️ *CONTROLS & ANALYTICS*\n"
+        "⚙️ *CONTROLS*\n"
         "┣ /pause — Pause campaign\n"
         "┣ /resume — Resume campaign\n"
         "┣ /status — Live statistics\n"
         "┗ /clearemails — Reset email list\n\n"
-        "〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n\n"n"
         "💎 _Powered by Email Spender Pro_"
-    ).format(chat_id=chat_id)
+    )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 @require_admin
