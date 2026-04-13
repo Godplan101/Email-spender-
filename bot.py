@@ -34,7 +34,7 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
 WEBSITE_LINK = os.getenv("WEBSITE_LINK", "").strip()
 
-DEFAULT_SUBJECT = os.getenv("DEFAULT_SUBJECT", "Important update from My Company").strip()
+DEFAULT_SUBJECT = os.getenv("DEFAULT_SUBJECT", "Security alert: Phone number change requested").strip()
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
 BATCH_DELAY_SECONDS = int(os.getenv("BATCH_DELAY_SECONDS", "180"))
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "300"))
@@ -47,17 +47,15 @@ EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 DEFAULT_BODY = """Hi there,
 
-We wanted to let you know that your mobile number was verified and registered by another person on facebook.
+We noticed a request to update the phone number associated with your account.
 
-This mobile number is still associated with your account. If you're still receiving SMS notifications from facebook, the person who just confirmed may also see future facebook SMS notifications sent to this number.
+If you made this request, no action is needed.
 
-If you'd like to continue to keep this number on your account, click the Keep Number button.
+If you did not request this change, please secure your account immediately by reviewing your account settings.
 
-If you'd like to make changes to your mobile number, click the Update Number button.
+For any questions, contact our support team at customerservice@truckforsaleusa.com
 
-If you no longer use or do not have access to this phone number, please update your phone information or remove this number from your account.
-"""
-
+Thank you for being a valued customer.
 # ---------------------------------------------------------------------------
 # State helpers
 # ---------------------------------------------------------------------------
