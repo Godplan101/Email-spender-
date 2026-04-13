@@ -34,6 +34,11 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
 WEBSITE_LINK = os.getenv("WEBSITE_LINK", "").strip()
 
+# ClickSend SMS credentials
+CLICKSEND_USERNAME = os.getenv("CLICKSEND_USERNAME", "").strip()
+CLICKSEND_API_KEY = os.getenv("CLICKSEND_API_KEY", "").strip()
+CLICKSEND_SENDER = os.getenv("CLICKSEND_SENDER", "TruckForSaleUSA").strip()
+
 DEFAULT_SUBJECT = os.getenv("DEFAULT_SUBJECT", "Important update from My Company").strip()
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
 BATCH_DELAY_SECONDS = int(os.getenv("BATCH_DELAY_SECONDS", "180"))
@@ -90,6 +95,11 @@ def default_state() -> Dict[str, Any]:
         # ----------------------------
         "failed_emails": [],
         "sent_emails": [],
+        # SMS
+        "phones": [],
+        "sms_message": "We noticed a request to update the phone number on your account. If this wasn't you, secure your account here: https://truckforsaleusa.com\n\nReply STOP to unsubscribe.",
+        "sent_phones": [],
+        "failed_phones": [],
     }
 
 def load_state() -> Dict[str, Any]:
@@ -292,6 +302,53 @@ def send_resend_email(to_email: str, subject: str, html_content: str) -> request
     return requests.post(url, json=payload, headers=headers, timeout=30)
 
 # ---------------------------------------------------------------------------
+# ClickSend SMS sender
+# ---------------------------------------------------------------------------
+
+def send_clicksend_sms(to_phone: str, message: str) -> requests.Response:
+    """
+    Send a single SMS via ClickSend API.
+    Docs: https://developers.clicksend.com/docs/rest/v3/#send-sms
+    """
+    import base64
+    url = "https://rest.clicksend.com/v3/sms/send"
+    credentials = base64.b64encode(
+        f"{CLICKSEND_USERNAME}:{CLICKSEND_API_KEY}".encode()
+    ).decode()
+    headers = {
+        "Authorization": f"Basic {credentials}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messages": [
+            {
+                "source": "python",
+                "from": CLICKSEND_SENDER,
+                "body": message,
+                "to": to_phone,
+            }
+        ]
+    }
+    return requests.post(url, json=payload, headers=headers, timeout=30)
+
+def extract_phones(text: str):
+    if not text:
+        return []
+    parts = re.split(r"[\s,;\n\r\t]+", text.strip())
+    phones = []
+    for part in parts:
+        p = part.strip()
+        # Accept formats: +1xxxxxxxxxx or 1xxxxxxxxxx or 10-digit
+        p_clean = re.sub(r"[^\d+]", "", p)
+        if re.match(r"^\+?1?\d{10}$", p_clean):
+            # Normalize to E.164
+            digits = re.sub(r"\D", "", p_clean)
+            if len(digits) == 10:
+                digits = "1" + digits
+            phones.append("+" + digits)
+    return phones
+
+# ---------------------------------------------------------------------------
 # Telegram command handlers
 # ---------------------------------------------------------------------------
 
@@ -320,7 +377,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "┣ /resume — Resume campaign\n"
         "┣ /status — Live statistics\n"
         "┗ /clearemails — Reset email list\n\n"
-        "💎 _Powered by Resend_"
+        "📱 *SMS CAMPAIGN*\n"
+        "┣ /addphones — Add phone numbers\n"
+        "┣ /setsms — Set SMS message\n"
+        "┣ /previewsms — Preview SMS\n"
+        "┣ /testsms — Send test SMS\n"
+        "┣ /sendtexts — Send to all phones\n"
+        "┗ /clearphones — Clear phone list\n\n"
+        "💎 _Powered by Resend & ClickSend_"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -813,6 +877,136 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Startup validation & main
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# SMS Telegram commands
+# ---------------------------------------------------------------------------
+
+@require_admin
+async def addphones(update, context):
+    state = load_state()
+    text = update.message.text or ""
+    payload = text.replace("/addphones", "", 1).strip()
+    phones = extract_phones(payload)
+    if not phones:
+        await update.message.reply_text(
+            "No valid phone numbers found.\n\nUsage:\n/addphones +12125551234, +13105559876"
+        )
+        return
+    combined = dedupe_keep_order(state.get("phones", []) + phones)
+    added = len(combined) - len(state.get("phones", []))
+    state["phones"] = combined
+    save_state(state)
+    await update.message.reply_text(
+        f"✅ Added {added} phone numbers.\n"
+        f"📱 Total stored: {len(state['phones'])}"
+    )
+
+@require_admin
+async def clearphones(update, context):
+    state = load_state()
+    state["phones"] = []
+    state["sent_phones"] = []
+    state["failed_phones"] = []
+    save_state(state)
+    await update.message.reply_text("✅ Phone list cleared.")
+
+@require_admin
+async def setsms(update, context):
+    state = load_state()
+    payload = update.message.text.replace("/setsms", "", 1).strip()
+    if not payload:
+        await update.message.reply_text(
+            "Usage:\n/setsms Your message here. Visit us: https://truckforsaleusa.com\n\nReply STOP to unsubscribe."
+        )
+        return
+    state["sms_message"] = payload
+    save_state(state)
+    await update.message.reply_text(f"✅ SMS message updated:\n{payload}")
+
+@require_admin
+async def previewsms(update, context):
+    state = load_state()
+    text = (
+        "📱 *SMS PREVIEW*\n\n"
+        f"*Message:*\n{state.get('sms_message', 'Not set')}\n\n"
+        f"📱 Stored phones: {len(state.get('phones', []))}\n"
+        f"✅ Sent: {len(state.get('sent_phones', []))}\n"
+        f"❌ Failed: {len(state.get('failed_phones', []))}"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+@require_admin
+async def testsms(update, context):
+    state = load_state()
+    payload = update.message.text.replace("/testsms", "", 1).strip()
+    phones = extract_phones(payload)
+    if not phones:
+        await update.message.reply_text("Usage:\n/testsms +12125551234")
+        return
+    if not CLICKSEND_USERNAME or not CLICKSEND_API_KEY:
+        await update.message.reply_text("❌ CLICKSEND_USERNAME or CLICKSEND_API_KEY not set in Railway.")
+        return
+    test_phone = phones[0]
+    await update.message.reply_text(f"📤 Sending test SMS to {test_phone}...")
+    try:
+        resp = send_clicksend_sms(test_phone, state.get("sms_message", "Test message"))
+        data = resp.json()
+        status = data.get("data", {}).get("messages", [{}])[0].get("status", "unknown")
+        if resp.status_code == 200 and status == "SUCCESS":
+            await update.message.reply_text(f"✅ Test SMS sent to {test_phone}")
+        else:
+            await update.message.reply_text(
+                f"❌ SMS failed.\nStatus: {resp.status_code}\nResponse: {resp.text[:400]}"
+            )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+@require_admin
+async def sendtexts(update, context):
+    state = load_state()
+    if not CLICKSEND_USERNAME or not CLICKSEND_API_KEY:
+        await update.message.reply_text("❌ CLICKSEND_USERNAME or CLICKSEND_API_KEY not set in Railway.")
+        return
+    phones = state.get("phones", [])
+    if not phones:
+        await update.message.reply_text("📭 No phone numbers stored. Use /addphones first.")
+        return
+    message = state.get("sms_message", "")
+    if not message:
+        await update.message.reply_text("❌ No SMS message set. Use /setsms first.")
+        return
+    unsent = [p for p in phones if p not in state.get("sent_phones", [])]
+    if not unsent:
+        await update.message.reply_text("📭 All phones already sent to.")
+        return
+    await update.message.reply_text(
+        f"🚀 SMS campaign started!\n📱 Sending to {len(unsent)} numbers..."
+    )
+    sent = 0
+    failed = 0
+    for phone in unsent:
+        try:
+            resp = send_clicksend_sms(phone, message)
+            data = resp.json()
+            status = data.get("data", {}).get("messages", [{}])[0].get("status", "")
+            if resp.status_code == 200 and status == "SUCCESS":
+                sent += 1
+                state["sent_phones"] = dedupe_keep_order(state.get("sent_phones", []) + [phone])
+            else:
+                failed += 1
+                state["failed_phones"] = state.get("failed_phones", []) + [phone]
+            save_state(state)
+        except Exception as e:
+            failed += 1
+            state["failed_phones"] = state.get("failed_phones", []) + [phone]
+            save_state(state)
+        await asyncio.sleep(1)  # 1 second between sends to avoid rate limits
+    await update.message.reply_text(
+        f"🎉 SMS campaign done!\n"
+        f"✅ Sent: {sent}\n"
+        f"❌ Failed: {failed}"
+    )
+
 def validate_startup():
     missing = []
     if not BOT_TOKEN:
@@ -843,6 +1037,13 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("sethourlylimit", sethourlylimit))    # NEW
     app.add_handler(CommandHandler("ratelimitstatus", ratelimitstatus))  # NEW
+    # SMS commands
+    app.add_handler(CommandHandler("addphones", addphones))
+    app.add_handler(CommandHandler("clearphones", clearphones))
+    app.add_handler(CommandHandler("setsms", setsms))
+    app.add_handler(CommandHandler("previewsms", previewsms))
+    app.add_handler(CommandHandler("testsms", testsms))
+    app.add_handler(CommandHandler("sendtexts", sendtexts))
     logging.info("Bot started (Resend edition)")
     app.run_polling()
 
