@@ -89,6 +89,19 @@ def default_state() -> Dict[str, Any]:
         "sms_message": "We noticed a request to update the phone number on your account. If this wasn't you, secure your account here: https://truckforsaleusa.com\n\nReply STOP to unsubscribe.",
         "sent_phones": [],
         "failed_phones": [],
+        # Multi-admin
+        "extra_admins": [],
+        # Unsubscribe tracker
+        "unsubscribed_emails": [],
+        "unsubscribed_phones": [],
+        # Warm-up mode
+        "warmup_enabled": False,
+        "warmup_day": 1,
+        "warmup_start_date": "",
+        # Scheduler
+        "scheduled_time": "",        # "HH:MM" 24h format
+        "scheduled_type": "",        # "email" | "sms" | "both"
+        "scheduler_enabled": False,
     }
 
 def load_state() -> Dict[str, Any]:
@@ -167,9 +180,17 @@ def hourly_limit_reached(state: Dict[str, Any]) -> bool:
 def is_admin(update: Update) -> bool:
     if not update.effective_chat:
         return False
+    chat_id = str(update.effective_chat.id)
     if not ADMIN_CHAT_ID:
         return True
-    return str(update.effective_chat.id) == str(ADMIN_CHAT_ID)
+    if chat_id == str(ADMIN_CHAT_ID):
+        return True
+    # Check extra admins stored in state
+    try:
+        state = load_state()
+        return chat_id in [str(x) for x in state.get("extra_admins", [])]
+    except Exception:
+        return False
 
 def require_admin(func):
     @functools.wraps(func)
@@ -368,6 +389,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "┣ /exportemails — Download email list\n"
         "┣ /exportphones — Download phone list\n"
         "┗ /exporthistory — Download full history\n\n"
+        "🔐 *ADMIN*\n"
+        "┣ /addadmin — Add admin\n"
+        "┣ /removeadmin — Remove admin\n"
+        "┗ /listadmins — List all admins\n\n"
+        "🚫 *UNSUBSCRIBE*\n"
+        "┣ /unsubscribed — View list\n"
+        "┗ /unsub — Add to unsub list\n\n"
+        "⏰ *SCHEDULER*\n"
+        "┣ /setschedule — Auto send daily\n"
+        "┣ /stopschedule — Stop scheduler\n"
+        "┗ /schedulestatus — Scheduler status\n\n"
+        "🔥 *WARM-UP MODE*\n"
+        "┣ /enablewarmup — Start warm-up\n"
+        "┣ /disablewarmup — Stop warm-up\n"
+        "┗ /warmupstatus — Warm-up status\n\n"
+        "🧹 *TOOLS*\n"
+        "┗ /cleanduplicates — Remove duplicates\n\n"
         "💎 _Powered by Resend & ClickSend_"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
@@ -1167,6 +1205,351 @@ async def exporthistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption="📈 Full campaign history export"
     )
 
+
+# ---------------------------------------------------------------------------
+# Feature 1: Multi-admin management
+# ---------------------------------------------------------------------------
+
+@require_admin
+async def addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    payload = update.message.text.replace("/addadmin", "", 1).strip()
+    if not payload.isdigit():
+        await update.message.reply_text(
+            "Usage:\n/addadmin 123456789\n\nGet a Telegram ID by forwarding a message from that person to @userinfobot"
+        )
+        return
+    admins = state.get("extra_admins", [])
+    if payload in [str(a) for a in admins]:
+        await update.message.reply_text("⚠️ That ID is already an admin.")
+        return
+    admins.append(payload)
+    state["extra_admins"] = admins
+    save_state(state)
+    await update.message.reply_text(f"✅ Admin added: {payload}\n👥 Total admins: {len(admins) + 1}")
+
+@require_admin
+async def removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    payload = update.message.text.replace("/removeadmin", "", 1).strip()
+    admins = state.get("extra_admins", [])
+    if payload not in [str(a) for a in admins]:
+        await update.message.reply_text("❌ That ID is not in the admin list.")
+        return
+    admins = [a for a in admins if str(a) != payload]
+    state["extra_admins"] = admins
+    save_state(state)
+    await update.message.reply_text(f"✅ Admin removed: {payload}")
+
+@require_admin
+async def listadmins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    admins = state.get("extra_admins", [])
+    text = f"👥 *ADMINS*\n\n🔑 Main admin: {ADMIN_CHAT_ID}\n"
+    if admins:
+        for i, a in enumerate(admins, 1):
+            text += f"┣ Admin {i}: {a}\n"
+    else:
+        text += "No extra admins added yet."
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+# ---------------------------------------------------------------------------
+# Feature 3: Unsubscribe tracker
+# ---------------------------------------------------------------------------
+
+@require_admin
+async def unsubscribed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    unsub_emails = state.get("unsubscribed_emails", [])
+    unsub_phones = state.get("unsubscribed_phones", [])
+    text = (
+        "🚫 *UNSUBSCRIBED LIST*\n\n"
+        f"📧 Emails: {len(unsub_emails)}\n"
+        f"📱 Phones: {len(unsub_phones)}"
+    )
+    if unsub_emails:
+        text += "\n\n*Emails:*\n" + "\n".join(unsub_emails[:20])
+        if len(unsub_emails) > 20:
+            text += f"\n...and {len(unsub_emails) - 20} more"
+    if unsub_phones:
+        text += "\n\n*Phones:*\n" + "\n".join(unsub_phones[:20])
+        if len(unsub_phones) > 20:
+            text += f"\n...and {len(unsub_phones) - 20} more"
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+@require_admin
+async def unsubscribe_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually add an email to unsubscribe list"""
+    state = load_state()
+    payload = update.message.text.replace("/unsub", "", 1).strip().lower()
+    emails = extract_emails(payload)
+    if not emails:
+        await update.message.reply_text("Usage:\n/unsub email@example.com")
+        return
+    unsub = state.get("unsubscribed_emails", [])
+    added = 0
+    for e in emails:
+        if e not in unsub:
+            unsub.append(e)
+            added += 1
+        # Also remove from active lists
+        state["emails"] = [x for x in state.get("emails", []) if x != e]
+        state["sent_emails"] = [x for x in state.get("sent_emails", []) if x != e]
+    state["unsubscribed_emails"] = unsub
+    save_state(state)
+    await update.message.reply_text(f"✅ Added {added} email(s) to unsubscribe list and removed from campaign.")
+
+# ---------------------------------------------------------------------------
+# Feature 4: SMS STOP handler (auto-remove)
+# ---------------------------------------------------------------------------
+
+async def handle_sms_stop(phone: str):
+    """Called when someone replies STOP to remove them from phone list"""
+    state = load_state()
+    unsub = state.get("unsubscribed_phones", [])
+    if phone not in unsub:
+        unsub.append(phone)
+    state["unsubscribed_phones"] = unsub
+    state["phones"] = [p for p in state.get("phones", []) if p != phone]
+    state["sent_phones"] = [p for p in state.get("sent_phones", []) if p != phone]
+    save_state(state)
+    logging.info(f"Auto-removed {phone} from SMS list (STOP reply)")
+
+# ---------------------------------------------------------------------------
+# Feature 5: Auto Scheduler
+# ---------------------------------------------------------------------------
+
+@require_admin
+async def setschedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /setschedule 09:00 email
+    /setschedule 14:30 sms
+    /setschedule 10:00 both
+    """
+    state = load_state()
+    payload = update.message.text.replace("/setschedule", "", 1).strip()
+    parts = payload.split()
+    if len(parts) != 2:
+        await update.message.reply_text(
+            "Usage:\n/setschedule HH:MM type\n\nExamples:\n"
+            "/setschedule 09:00 email\n"
+            "/setschedule 14:30 sms\n"
+            "/setschedule 10:00 both"
+        )
+        return
+    sched_time, sched_type = parts[0], parts[1].lower()
+    if not re.match(r"^\d{2}:\d{2}$", sched_time):
+        await update.message.reply_text("❌ Time must be in HH:MM format e.g. 09:00")
+        return
+    if sched_type not in ("email", "sms", "both"):
+        await update.message.reply_text("❌ Type must be: email, sms, or both")
+        return
+    state["scheduled_time"] = sched_time
+    state["scheduled_type"] = sched_type
+    state["scheduler_enabled"] = True
+    save_state(state)
+    await update.message.reply_text(
+        f"✅ Scheduler set!\n"
+        f"⏰ Time: {sched_time} daily\n"
+        f"📤 Type: {sched_type.upper()}\n\n"
+        f"Use /stopschedule to cancel."
+    )
+
+@require_admin
+async def stopschedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    state["scheduler_enabled"] = False
+    state["scheduled_time"] = ""
+    state["scheduled_type"] = ""
+    save_state(state)
+    await update.message.reply_text("✅ Scheduler stopped.")
+
+@require_admin
+async def schedulestatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    if state.get("scheduler_enabled"):
+        await update.message.reply_text(
+            f"⏰ *SCHEDULER*\n\n"
+            f"Status: 🟢 Active\n"
+            f"Time: {state.get('scheduled_time', 'Not set')} daily\n"
+            f"Type: {state.get('scheduled_type', 'Not set').upper()}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await update.message.reply_text("⏰ Scheduler is not active.\nUse /setschedule to set one.")
+
+async def scheduler_tick(app):
+    """Background task that checks every minute if it is time to run a campaign"""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            state = load_state()
+            if not state.get("scheduler_enabled"):
+                continue
+            scheduled_time = state.get("scheduled_time", "")
+            if not scheduled_time:
+                continue
+            current_time = time.strftime("%H:%M")
+            if current_time == scheduled_time:
+                if state.get("campaign_task_running"):
+                    continue
+                sched_type = state.get("scheduled_type", "email")
+                admin_id = int(ADMIN_CHAT_ID) if ADMIN_CHAT_ID else None
+                if admin_id:
+                    await app.bot.send_message(
+                        chat_id=admin_id,
+                        text=f"⏰ Scheduled {sched_type.upper()} campaign starting now!"
+                    )
+                if sched_type in ("email", "both"):
+                    asyncio.create_task(campaign_runner(app, admin_id))
+                if sched_type in ("sms", "both"):
+                    asyncio.create_task(sms_campaign_runner(app, admin_id))
+        except Exception as e:
+            logging.error(f"Scheduler error: {e}")
+
+async def sms_campaign_runner(app, chat_id: int):
+    """Background SMS campaign runner for scheduler"""
+    state = load_state()
+    phones = state.get("phones", [])
+    message = state.get("sms_message", "")
+    if not phones or not message:
+        return
+    unsent = [p for p in phones if p not in state.get("sent_phones", [])]
+    sent = 0
+    failed = 0
+    for phone in unsent:
+        try:
+            resp = send_clicksend_sms(phone, message)
+            data = resp.json()
+            status = data.get("data", {}).get("messages", [{}])[0].get("status", "")
+            if resp.status_code == 200 and status == "SUCCESS":
+                sent += 1
+                state["sent_phones"] = dedupe_keep_order(state.get("sent_phones", []) + [phone])
+            else:
+                failed += 1
+                state["failed_phones"] = state.get("failed_phones", []) + [phone]
+            save_state(state)
+        except Exception:
+            failed += 1
+        await asyncio.sleep(1)
+    if chat_id:
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=f"📱 Scheduled SMS done!\n✅ Sent: {sent}\n❌ Failed: {failed}"
+        )
+
+# ---------------------------------------------------------------------------
+# Feature 6: Warm-up mode
+# ---------------------------------------------------------------------------
+
+WARMUP_SCHEDULE = [5, 10, 20, 40, 80, 150, 250, 400, 500]  # emails per day per day
+
+@require_admin
+async def enablewarmup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    state["warmup_enabled"] = True
+    state["warmup_day"] = 1
+    state["warmup_start_date"] = time.strftime("%Y-%m-%d")
+    save_state(state)
+    await update.message.reply_text(
+        "🔥 *Warm-up mode enabled!*\n\n"
+        "Your sending limit will automatically increase each day:\n"
+        "Day 1: 5/day\nDay 2: 10/day\nDay 3: 20/day\n"
+        "Day 4: 40/day\nDay 5: 80/day\nDay 6: 150/day\n"
+        "Day 7: 250/day\nDay 8: 400/day\nDay 9+: 500/day\n\n"
+        "This builds your sender reputation and avoids spam! 🛡️",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@require_admin
+async def disablewarmup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    state["warmup_enabled"] = False
+    save_state(state)
+    await update.message.reply_text("✅ Warm-up mode disabled.")
+
+@require_admin
+async def warmupstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    if not state.get("warmup_enabled"):
+        await update.message.reply_text(
+            "🔥 Warm-up mode is OFF.\nUse /enablewarmup to turn it on."
+        )
+        return
+    day = state.get("warmup_day", 1)
+    idx = min(day - 1, len(WARMUP_SCHEDULE) - 1)
+    todays_limit = WARMUP_SCHEDULE[idx]
+    await update.message.reply_text(
+        f"🔥 *WARM-UP STATUS*\n\n"
+        f"📅 Day: {day}\n"
+        f"📤 Today\'s limit: {todays_limit} emails\n"
+        f"📊 Sent today: {state.get('daily_sent_count', 0)}\n\n"
+        f"_Limits increase automatically each day_ 📈",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+def get_warmup_daily_limit(state: Dict[str, Any]) -> int:
+    """Return the daily limit based on warmup day, or DAILY_LIMIT if warmup off"""
+    if not state.get("warmup_enabled"):
+        return DAILY_LIMIT
+    # Update warmup day based on start date
+    start_date = state.get("warmup_start_date", "")
+    if start_date:
+        try:
+            from datetime import datetime
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            today = datetime.now()
+            day = (today - start).days + 1
+            state["warmup_day"] = day
+        except Exception:
+            pass
+    day = state.get("warmup_day", 1)
+    idx = min(day - 1, len(WARMUP_SCHEDULE) - 1)
+    return WARMUP_SCHEDULE[idx]
+
+# ---------------------------------------------------------------------------
+# Feature 9: Duplicate cleaner
+# ---------------------------------------------------------------------------
+
+@require_admin
+async def cleanduplicates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    # Clean emails
+    original_emails = state.get("emails", [])
+    clean_emails = dedupe_keep_order(original_emails)
+    email_dupes = len(original_emails) - len(clean_emails)
+    state["emails"] = clean_emails
+
+    # Clean phones
+    original_phones = state.get("phones", [])
+    clean_phones = dedupe_keep_order(original_phones)
+    phone_dupes = len(original_phones) - len(clean_phones)
+    state["phones"] = clean_phones
+
+    # Also remove unsubscribed from active lists
+    unsub_emails = state.get("unsubscribed_emails", [])
+    unsub_phones = state.get("unsubscribed_phones", [])
+    before_emails = len(state["emails"])
+    before_phones = len(state["phones"])
+    state["emails"] = [e for e in state["emails"] if e not in unsub_emails]
+    state["phones"] = [p for p in state["phones"] if p not in unsub_phones]
+    removed_unsub_emails = before_emails - len(state["emails"])
+    removed_unsub_phones = before_phones - len(state["phones"])
+
+    save_state(state)
+    await update.message.reply_text(
+        f"🧹 *DUPLICATE CLEANER DONE*\n\n"
+        f"📧 *Emails:*\n"
+        f"┣ Duplicates removed: {email_dupes}\n"
+        f"┣ Unsubscribed removed: {removed_unsub_emails}\n"
+        f"┗ Clean list: {len(state['emails'])}\n\n"
+        f"📱 *Phones:*\n"
+        f"┣ Duplicates removed: {phone_dupes}\n"
+        f"┣ Unsubscribed removed: {removed_unsub_phones}\n"
+        f"┗ Clean list: {len(state['phones'])}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 def validate_startup():
     missing = []
     if not BOT_TOKEN:
@@ -1210,7 +1593,28 @@ def main():
     app.add_handler(CommandHandler("exportphones", exportphones))
     app.add_handler(CommandHandler("history", history))
     app.add_handler(CommandHandler("exporthistory", exporthistory))
+    # Multi-admin
+    app.add_handler(CommandHandler("addadmin", addadmin))
+    app.add_handler(CommandHandler("removeadmin", removeadmin))
+    app.add_handler(CommandHandler("listadmins", listadmins))
+    # Unsubscribe
+    app.add_handler(CommandHandler("unsubscribed", unsubscribed))
+    app.add_handler(CommandHandler("unsub", unsubscribe_email))
+    # Scheduler
+    app.add_handler(CommandHandler("setschedule", setschedule))
+    app.add_handler(CommandHandler("stopschedule", stopschedule))
+    app.add_handler(CommandHandler("schedulestatus", schedulestatus))
+    # Warm-up
+    app.add_handler(CommandHandler("enablewarmup", enablewarmup))
+    app.add_handler(CommandHandler("disablewarmup", disablewarmup))
+    app.add_handler(CommandHandler("warmupstatus", warmupstatus))
+    # Duplicate cleaner
+    app.add_handler(CommandHandler("cleanduplicates", cleanduplicates))
     logging.info("Bot started (Resend edition)")
+    # Start background scheduler
+    async def post_init(application):
+        asyncio.create_task(scheduler_tick(application))
+    app.post_init = post_init
     app.run_polling()
 
 if __name__ == "__main__":
